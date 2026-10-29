@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gleam Color: find colors that work with your image</title>
+<meta name="description" content="Upload an image and Gleam Color analyzes it locally in your browser to recommend colors that work with it. No servers, no AI APIs, nothing leaves your device." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;1,9..144,500&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+
+<!-- PWA: manifest, icons, theme -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#46243F" />
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Gleam Color" />
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="topbar__inner">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+        </svg>
+      </span>
+      <span class="brand__name">Gleam<em>Color</em></span>
+    </div>
+    <div class="topbar__right">
+      <p class="brand__note">Runs entirely in your browser · nothing is uploaded</p>
+      <button class="btn btn--ghost btn--sm install-btn" id="installBtn" type="button" hidden>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+        Install app
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============ HERO / UPLOAD ============ -->
+  <section class="hero" id="hero">
+    <div class="hero__intro">
+      <p class="eyebrow">No. 01, sample a color</p>
+      <h1 class="hero__title">Find colors that<br/>work with your image.</h1>
+      <p class="hero__sub">Drop in a photo and Gleam Color reads its palette, then hands you background, text, and accent colors chosen to work alongside it, with plain-language reasoning for each pick.</p>
+    </div>
+
+    <div class="uploader" id="uploader">
+      <input type="file" id="fileInput" accept="image/jpeg,image/jpg,image/png,image/webp" hidden />
+
+      <div class="uploader__dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload an image">
+        <div class="uploader__deck" aria-hidden="true">
+          <span class="chip chip--a"></span>
+          <span class="chip chip--b"></span>
+          <span class="chip chip--c"></span>
+        </div>
+        <p class="uploader__cta">Drag a photo here</p>
+        <p class="uploader__or">or</p>
+        <button class="btn btn--primary" id="browseBtn" type="button">Browse a file</button>
+        <p class="uploader__formats">JPG, PNG, WebP. Stays on this device.</p>
+      </div>
+
+      <!-- preview shown once an image is loaded -->
+      <div class="uploader__preview" id="uploaderPreview" hidden>
+        <img id="previewImg" alt="Uploaded image preview" />
+        <div class="uploader__preview-actions">
+          <button class="btn btn--ghost btn--sm" id="replaceBtn" type="button">Replace image</button>
+          <button class="btn btn--ghost btn--sm" id="removeBtn" type="button">Remove</button>
+        </div>
+      </div>
+
+      <!-- start from a typed color instead of an image -->
+      <div class="color-entry" id="colorEntry">
+        <form class="color-entry__form" id="colorForm" novalidate>
+          <label class="color-entry__label" for="colorInput">Or start from a color</label>
+          <div class="color-entry__row">
+            <div class="color-entry__field">
+              <span class="color-entry__chip" id="colorChip" aria-hidden="true"></span>
+              <input id="colorInput" type="text" list="colorNames" placeholder="#6B7950 or sage green" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="colorHint" />
+            </div>
+            <button class="btn btn--secondary" type="submit">Get palette</button>
+          </div>
+          <p class="color-entry__hint" id="colorHint">A HEX code, RGB values, or a color name.</p>
+          <p class="color-entry__error" id="colorError" role="alert" hidden></p>
+        </form>
+        <datalist id="colorNames"></datalist>
+      </div>
+    </div>
+
+    <div class="status-line" id="statusLine" hidden>
+      <span class="status-line__dot" aria-hidden="true"></span>
+      <span id="statusText">Analyzing your image…</span>
+    </div>
+
+    <p class="error-line" id="errorLine" hidden></p>
+  </section>
+
+  <!-- ============ EMPTY STATE SAMPLE ============ -->
+  <section class="empty-sample" id="emptySample">
+    <p class="eyebrow">While you decide</p>
+    <h2 class="empty-sample__title">Your colors are waiting.</h2>
+    <p class="empty-sample__sub">Upload an image and we'll pull a palette from it, then suggest backgrounds, text, and accents to pair alongside it. Here's the kind of thing it produces.</p>
+    <div class="sample-fan" id="sampleFan" aria-hidden="true"></div>
+  </section>
+
+  <!-- ============ WORKSPACE (results) ============ -->
+  <section class="workspace" id="workspace" hidden>
+
+    <div class="workspace__grid">
+
+      <!-- LEFT: image -->
+      <div class="workspace__image-col">
+        <div class="image-card">
+          <img id="workspaceImg" alt="Analyzed image" />
+          <div class="base-color" id="baseColor" hidden></div>
+        </div>
+        <div class="image-card__meta">
+          <div class="swatch-trio" id="swatchTrio"></div>
+          <div class="base-info" id="baseInfo" hidden></div>
+          <button class="btn btn--ghost btn--sm" id="startOverBtn" type="button">Upload another image</button>
+        </div>
+      </div>
+
+      <!-- RIGHT: analysis -->
+      <div class="workspace__panel">
+
+        <nav class="tabs" id="tabs" role="tablist" aria-label="Result sections">
+          <button class="tab" data-tab="colors" role="tab" aria-selected="true">Colors Found</button>
+          <button class="tab" data-tab="recs" role="tab" aria-selected="false">Recommendations</button>
+          <button class="tab" data-tab="palette" role="tab" aria-selected="false">Full Palette</button>
+          <button class="tab" data-tab="gradient" role="tab" aria-selected="false">Gradient</button>
+        </nav>
+
+        <!-- Tab: Colors Found -->
+        <div class="tab-panel" id="panel-colors" data-panel="colors">
+          <p class="panel-note">The colors Gleam Color detected in your image, ranked by how visually important they are, not just how many pixels they cover.</p>
+          <div class="swatch-grid" id="colorsFoundGrid"></div>
+        </div>
+
+        <!-- Tab: Recommendations -->
+        <div class="tab-panel" id="panel-recs" data-panel="recs" hidden>
+          <p class="panel-note">Suggestions, not rules. Each is scored on how well it fits, so treat the number as a helpful estimate, not a guarantee.</p>
+          <div class="best-pick" id="bestPickCard"></div>
+          <div class="rec-groups" id="recGroups"></div>
+        </div>
+
+        <!-- Tab: Full palette -->
+        <div class="tab-panel" id="panel-palette" data-panel="palette" hidden>
+          <p class="panel-note">A ready-to-use set: background, primary, secondary, accent, text, and a highlight.</p>
+          <div class="full-palette" id="fullPaletteGrid"></div>
+          <p class="palette-check" id="paletteCheck"></p>
+          <div class="palette-actions">
+            <button class="btn btn--secondary" id="copyAllHexBtn" type="button">Copy all HEX</button>
+            <button class="btn btn--secondary" id="copyCssVarsBtn" type="button">Copy CSS variables</button>
+          </div>
+        </div>
+
+        <!-- Tab: Gradient -->
+        <div class="tab-panel" id="panel-gradient" data-panel="gradient" hidden>
+          <p class="panel-note">Built from two colors in your recommended palette.</p>
+          <div class="gradient-preview" id="gradientPreview"></div>
+          <div class="gradient-controls">
+            <div class="segmented" id="gradientTypeToggle">
+              <button class="segmented__btn is-active" data-gradtype="linear" type="button">Linear</button>
+              <button class="segmented__btn" data-gradtype="radial" type="button">Radial</button>
+            </div>
+            <button class="btn btn--secondary" id="copyGradientBtn" type="button">Copy CSS</button>
+          </div>
+          <code class="gradient-code" id="gradientCode"></code>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>Gleam Color analyzes images locally using your browser's Canvas API. Your image is never uploaded, stored, or sent anywhere.</p>
+</footer>
+
+<!-- toast for copy confirmations -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="script.js"></script>
+</body>
+</html>
