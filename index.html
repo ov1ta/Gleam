@@ -88,6 +88,9 @@
             <div class="color-entry__field">
               <span class="color-entry__chip" id="colorChip" aria-hidden="true"></span>
               <input id="colorInput" type="text" list="colorNames" placeholder="#6B7950 or sage green" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="colorHint" />
+              <button class="color-entry__clear" id="colorClear" type="button" aria-label="Clear the color" hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
             </div>
             <button class="btn btn--secondary" type="submit">Get palette</button>
           </div>
@@ -95,6 +98,19 @@
           <p class="color-entry__error" id="colorError" role="alert" hidden></p>
         </form>
         <datalist id="colorNames"></datalist>
+
+        <!-- color suggestions: three colors that go together -->
+        <div class="suggest" id="suggest">
+          <div class="suggest__bar">
+            <button class="btn btn--secondary" id="suggestBtn" type="button">Suggest colors</button>
+            <button class="btn btn--ghost btn--sm" id="suggestClear" type="button" hidden>Clear</button>
+          </div>
+          <div class="suggest__result" id="suggestResult" aria-live="polite" hidden>
+            <p class="suggest__scheme" id="suggestScheme"></p>
+            <div class="suggest__trio" id="suggestTrio"></div>
+            <p class="suggest__hint">Tap a color to build a full palette from it. Tap a HEX code to copy it.</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -128,7 +144,10 @@
         <div class="image-card__meta">
           <div class="swatch-trio" id="swatchTrio"></div>
           <div class="base-info" id="baseInfo" hidden></div>
-          <button class="btn btn--ghost btn--sm" id="startOverBtn" type="button">Upload another image</button>
+          <div class="meta-actions">
+            <button class="btn btn--ghost btn--sm" id="startOverBtn" type="button">Upload another image</button>
+            <button class="btn btn--ghost btn--sm" id="clearBtn" type="button">Remove image</button>
+          </div>
         </div>
       </div>
 
@@ -193,6 +212,7 @@
 <!-- toast for copy confirmations -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<script src="colors.js"></script>
 <script src="script.js"></script>
 </body>
 </html>

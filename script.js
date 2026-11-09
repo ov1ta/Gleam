@@ -52,6 +52,13 @@
     colorNames: el('colorNames'),
     baseColor: el('baseColor'),
     baseInfo: el('baseInfo'),
+    colorClear: el('colorClear'),
+    suggestBtn: el('suggestBtn'),
+    suggestClear: el('suggestClear'),
+    suggestResult: el('suggestResult'),
+    suggestScheme: el('suggestScheme'),
+    suggestTrio: el('suggestTrio'),
+    clearBtn: el('clearBtn'),
   };
 
   let state = {
@@ -70,6 +77,9 @@
 
   function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
   function round(v) { return Math.round(v); }
+  function esc(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
 
   function rgbToHex(r, g, b) {
     const h = (n) => clamp(round(n), 0, 255).toString(16).padStart(2, '0');
@@ -347,6 +357,9 @@ Rosy Brown B58A84
 Royal Purple 5B3FA0
 Brown 8B5A3C
 Fuchsia E01FA8
+Pure Blue 0000FF
+Pure Red FF0000
+Pure Green 00FF00
 `;
 
   function rgbToLab(r, g, b) {
@@ -361,18 +374,40 @@ Fuchsia E01FA8
   }
 
   let namedColorTable = null;
+
+  // Words that already describe lightness or strength, so no second descriptor is added to them.
+  const NAME_QUALIFIER_WORDS = new Set([
+    'light', 'dark', 'deep', 'pale', 'dusty', 'muted', 'vivid', 'pastel', 'bright', 'neon', 'soft', 'warm', 'cool',
+    'royal', 'midnight', 'medium', 'baby', 'powder', 'french', 'old', 'burnt', 'rich', 'faded', 'misty', 'smoky',
+    'electric', 'pure', 'true', 'dim', 'sea', 'sky', 'forest', 'army', 'hunter', 'cadet', 'steel', 'golden',
+  ]);
+
   function ensureNamedTable() {
     if (!namedColorTable) {
-      namedColorTable = NAMED_COLORS_RAW.trim().split('\n').map((line) => {
+      const lines = NAMED_COLORS_RAW.trim().split('\n');
+      // colors.js adds the standard web color names and plain names from the open color-name-list project.
+      if (typeof window !== 'undefined' && window.GLEAM_EXTRA_NAMES) lines.push(...window.GLEAM_EXTRA_NAMES.trim().split('\n'));
+      const seen = new Set();
+      namedColorTable = [];
+      for (const line of lines) {
         const t = line.trim();
         const i = t.lastIndexOf(' ');
+        if (i < 1) continue;
         const name = t.slice(0, i);
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue; // first spelling wins, so hand-picked names take priority
+        seen.add(key);
         const rgb = hexToRgb(t.slice(i + 1));
-        return { name, key: name.toLowerCase(), rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
-      });
+        const lab = rgbToLab(rgb.r, rgb.g, rgb.b);
+        namedColorTable.push({ name, key, rgb, lab, chroma: Math.hypot(lab[1], lab[2]) });
+      }
     }
     return namedColorTable;
   }
+
+  // Finds the closest plain name, then, if the match is not very close, says honestly how the
+  // color differs from it ("Light", "Dark", "Deep", "Pale", "Muted", "Vivid"). So a name
+  // always describes the swatch it sits next to.
   function nameColorFromRgb(r, g, b) {
     const table = ensureNamedTable();
     const lab = rgbToLab(r, g, b);
@@ -381,7 +416,20 @@ Fuchsia E01FA8
       const d = (n.lab[0] - lab[0]) ** 2 + (n.lab[1] - lab[1]) ** 2 + (n.lab[2] - lab[2]) ** 2;
       if (d < bestD) { bestD = d; best = n; }
     }
-    return best.name;
+    if (Math.sqrt(bestD) <= 9) return best.name;
+
+    const words = best.key.split(' ');
+    if (words.length > 1 && NAME_QUALIFIER_WORDS.has(words[0])) return best.name;
+    const chroma = Math.hypot(lab[1], lab[2]);
+    if (chroma < 8 || best.chroma < 8) return best.name; // neutrals are named by the table alone
+
+    const dL = lab[0] - best.lab[0];
+    let descriptor = null;
+    if (dL >= 9) descriptor = chroma < 0.75 * best.chroma ? 'Pale' : 'Light';
+    else if (dL <= -9) descriptor = chroma >= 0.9 * best.chroma ? 'Deep' : 'Dark';
+    else if (chroma < 0.65 * best.chroma) descriptor = 'Muted';
+    else if (chroma > 1.35 * best.chroma) descriptor = 'Vivid';
+    return descriptor ? `${descriptor} ${best.name}` : best.name;
   }
 
   /* ============================================================
@@ -424,6 +472,10 @@ Fuchsia E01FA8
         return hslToRgb(hsl.h, clamp(hsl.s, 0, 100), clamp(hsl.l, 0, 100));
       }
     }
+
+    // A name from the large suggestion library ("strawberry moon").
+    const fromLibrary = findInLibrary(key);
+    if (fromLibrary) return fromLibrary.rgb;
 
     // A longer word that starts a known name ("oliv" finds Olive).
     if (text.length >= 4) {
@@ -490,6 +542,124 @@ Fuchsia E01FA8
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .map((x) => x.name);
+  }
+
+  /* ============================================================
+     2c. COLOR SUGGESTIONS: three colors that go together
+     A large library of named colors (colors.js, about 5,000) is searched
+     for colors that sit at color-wheel positions from a randomly chosen
+     starting color, so no two taps are likely to match.
+  ============================================================ */
+
+  let libraryTable = null;
+  let libraryIndex = null;
+  function ensureLibrary() {
+    if (libraryTable) return libraryTable;
+    libraryTable = [];
+    const seen = new Set();
+    const add = (name, rgb) => {
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      libraryTable.push({
+        name, key, rgb, hex: rgbToHex(rgb.r, rgb.g, rgb.b),
+        hsl: rgbToHsl(rgb.r, rgb.g, rgb.b), lab: rgbToLab(rgb.r, rgb.g, rgb.b),
+      });
+    };
+    if (typeof window !== 'undefined' && window.GLEAM_LIBRARY) {
+      for (const line of window.GLEAM_LIBRARY.trim().split('\n')) {
+        const i = line.indexOf(' ');
+        if (i === 6) add(line.slice(7), hexToRgb(line.slice(0, 6)));
+      }
+    }
+    // The plain naming table is part of the library too (and the whole library if colors.js is missing).
+    for (const n of ensureNamedTable()) add(n.name, n.rgb);
+    return libraryTable;
+  }
+  function findInLibrary(key) {
+    if (!libraryIndex) {
+      libraryIndex = new Map();
+      for (const n of ensureLibrary()) libraryIndex.set(n.key, n);
+    }
+    return libraryIndex.get(key) || null;
+  }
+
+  const SUGGESTION_SCHEMES = [
+    { key: 'analogous', label: 'Analogous', weight: 3, note: 'Neighbors on the color wheel. Calm and easy to live with.' },
+    { key: 'triadic', label: 'Triadic', weight: 3, note: 'Three colors spaced evenly around the wheel. Lively but balanced.' },
+    { key: 'split', label: 'Split complementary', weight: 3, note: 'One color plus the two beside its opposite. Contrast with less tension.' },
+    { key: 'complement', label: 'Complementary with a neutral', weight: 2, note: 'Two opposites, calmed down by a quiet neutral.' },
+    { key: 'mono', label: 'Monochromatic', weight: 2, note: 'One hue in three depths. Clean and cohesive.' },
+  ];
+  const recentSuggestionBases = [];
+
+  function randomItem(list) { return list[Math.floor(Math.random() * list.length)]; }
+  function jitter(range) { return (Math.random() * 2 - 1) * range; }
+  function pickWeighted(list) {
+    let r = Math.random() * list.reduce((sum, x) => sum + x.weight, 0);
+    for (const x of list) { r -= x.weight; if (r <= 0) return x; }
+    return list[0];
+  }
+  function labDistance(a, b) {
+    return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+  }
+
+  // The library colors closest to a target hue, saturation and lightness.
+  function nearestLibraryColors(h, sat, light, used, count) {
+    const target = hslToRgb(h, clamp(sat, 4, 96), clamp(light, 8, 94));
+    const tl = rgbToLab(target.r, target.g, target.b);
+    const best = [];
+    for (const n of ensureLibrary()) {
+      if (used.has(n.key)) continue;
+      const d = (n.lab[0] - tl[0]) ** 2 + (n.lab[1] - tl[1]) ** 2 + (n.lab[2] - tl[2]) ** 2;
+      if (best.length < count || d < best[best.length - 1].d) {
+        best.push({ n, d });
+        best.sort((x, y) => x.d - y.d);
+        if (best.length > count) best.pop();
+      }
+    }
+    return best.map((x) => x.n);
+  }
+
+  function buildSuggestion() {
+    const library = ensureLibrary();
+    let pool = library.filter((n) => n.hsl.s >= 28 && n.hsl.s <= 90 && n.hsl.l >= 24 && n.hsl.l <= 76 && !recentSuggestionBases.includes(n.key));
+    if (pool.length === 0) pool = library;
+
+    let result = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const base = randomItem(pool);
+      const scheme = pickWeighted(SUGGESTION_SCHEMES);
+      const { h, s, l } = base.hsl;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+
+      // Where the other two colors should land on the wheel, with the lightness varied
+      // so the set has depth (one lighter, one deeper) rather than three flat equals.
+      let targets;
+      if (scheme.key === 'analogous') targets = [[h + dir * 28, s - 4, l + 12 + jitter(5)], [h - dir * 28, s - 8, l - 14 + jitter(5)]];
+      else if (scheme.key === 'triadic') targets = [[h + dir * 120, s - 6, l + 8 + jitter(6)], [h + dir * 240, s - 10, l - 10 + jitter(6)]];
+      else if (scheme.key === 'split') targets = [[h + dir * 150, s - 4, l + 6 + jitter(6)], [h + dir * 210, s - 10, l - 10 + jitter(6)]];
+      else if (scheme.key === 'complement') targets = [[h + 180, s - 2, l + jitter(8)], [h + 180 + jitter(30), 14, l > 55 ? 16 : 90]];
+      else targets = [[h, s * 0.8, l + 30 + jitter(4)], [h, s, l - 26 + jitter(4)]];
+
+      const used = new Set([base.key]);
+      const colors = [base];
+      for (const [th, ts, tl] of targets) {
+        const choice = randomItem(nearestLibraryColors(th, ts, tl, used, 2));
+        used.add(choice.key);
+        colors.push(choice);
+      }
+      if (scheme.key === 'mono') colors.sort((a, b) => b.hsl.l - a.hsl.l);
+
+      // Reject sets where two colors are nearly the same.
+      let minGap = Infinity;
+      for (let i = 0; i < colors.length; i++) for (let j = i + 1; j < colors.length; j++) minGap = Math.min(minGap, labDistance(colors[i].lab, colors[j].lab));
+      result = { scheme, colors, base };
+      if (minGap >= 14) break;
+    }
+    recentSuggestionBases.push(result.base.key);
+    if (recentSuggestionBases.length > 60) recentSuggestionBases.shift();
+    return result;
   }
 
   /* ============================================================
@@ -618,21 +788,84 @@ Fuchsia E01FA8
     return Math.pow(freq, 0.65) * satFactor * (0.75 + 0.25 * midtoneFactor);
   }
 
+  // Merges clusters that look the same to the eye (small distance in CIE Lab). Plain RGB
+  // distance misses some of these, which is how two near-identical shades got listed twice.
+  function mergeByPerception(clusters, threshold = 10) {
+    const merged = [];
+    for (const c of [...clusters].sort((a, b) => b.count - a.count)) {
+      const lab = rgbToLab(c.r, c.g, c.b);
+      const match = merged.find((m) => labDistance(m.lab, lab) < threshold);
+      if (match) {
+        const total = match.count + c.count;
+        match.r = (match.r * match.count + c.r * c.count) / total;
+        match.g = (match.g * match.count + c.g * c.count) / total;
+        match.b = (match.b * match.count + c.b * c.count) / total;
+        match.count = total;
+        match.lab = rgbToLab(match.r, match.g, match.b);
+      } else {
+        merged.push({ ...c, lab });
+      }
+    }
+    return merged;
+  }
+
+  // If two found colors still land on the same name, say how they differ ("Light Sage Green").
+  function makeNamesUnique(colors) {
+    const used = new Set();
+    for (const c of colors) {
+      if (used.has(c.name)) {
+        const first = c.name.toLowerCase().split(' ')[0];
+        if (!NAME_QUALIFIER_WORDS.has(first)) {
+          const twin = colors.find((o) => o !== c && o.name === c.name);
+          c.name = `${twin && c.l < twin.l ? 'Dark' : 'Light'} ${c.name}`;
+        }
+      }
+      used.add(c.name);
+    }
+    return colors;
+  }
+
   function extractColorsFound(imageData) {
     const samples = collectSamples(imageData);
     if (samples.length === 0) return [];
 
-    let clusters = kMeans(samples, 8, 8);
-    clusters = mergeSimilarClusters(clusters, 22);
+    let clusters = kMeans(samples, 12, 10);
+    clusters = mergeSimilarClusters(clusters, 18);
+    clusters = mergeByPerception(clusters, 10);
 
     const total = clusters.reduce((s, c) => s + c.count, 0);
     clusters.forEach((c) => { c.score = scoreImportance(c, total); c.pct = (c.count / total) * 100; });
+
+    // Where two shapes meet, anti-aliased edge pixels blend their colors. Those show up as small
+    // clusters sitting on the straight line between two bigger ones. They are not real colors in the
+    // photo, so they are dropped. A small color that is NOT on such a line (a highlight, a flower in
+    // a field) is real and stays.
+    const isBlendArtifact = (c) => {
+      if (c.pct >= 4) return false;
+      if (c.pct < 0.4) return true; // too small to matter
+      const big = clusters.filter((o) => o !== c && o.count >= c.count * 3);
+      for (let i = 0; i < big.length; i++) {
+        for (let j = i + 1; j < big.length; j++) {
+          const a = big[i], b = big[j];
+          const abx = b.r - a.r, aby = b.g - a.g, abz = b.b - a.b;
+          const len2 = abx * abx + aby * aby + abz * abz;
+          if (len2 < 400) continue;
+          const t = ((c.r - a.r) * abx + (c.g - a.g) * aby + (c.b - a.b) * abz) / len2;
+          if (t < 0.05 || t > 0.95) continue;
+          const dx = a.r + t * abx - c.r, dy = a.g + t * aby - c.g, dz = a.b + t * abz - c.b;
+          if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 14) return true;
+        }
+      }
+      return false;
+    };
+    const real = clusters.filter((c) => !isBlendArtifact(c));
+    if (real.length >= 2) clusters = real;
     clusters.sort((a, b) => b.score - a.score);
 
-    return clusters.slice(0, 8).map((c) => ({
+    return makeNamesUnique(clusters.slice(0, 8).map((c) => ({
       ...colorFromRgb(c.r, c.g, c.b),
       pct: c.pct,
-    }));
+    })));
   }
 
   function pickDominantSecondaryAccent(colorsFound) {
@@ -1223,6 +1456,11 @@ Fuchsia E01FA8
     showToast._t = setTimeout(() => dom.toast.classList.remove('is-visible'), ms);
   }
 
+  function hideToast() {
+    clearTimeout(showToast._t);
+    dom.toast.classList.remove('is-visible');
+  }
+
   async function copyText(text) {
     try {
       await navigator.clipboard.writeText(text);
@@ -1245,7 +1483,9 @@ Fuchsia E01FA8
   }
 
   // The same workspace serves both an analyzed image and a typed color.
+  let workspaceMode = 'image';
   function setWorkspaceMode(mode) {
+    workspaceMode = mode;
     const color = mode === 'color';
     dom.workspaceImg.hidden = color;
     dom.baseColor.hidden = !color;
@@ -1253,6 +1493,7 @@ Fuchsia E01FA8
     dom.baseInfo.hidden = !color;
     document.querySelector('.tab[data-tab="colors"]').hidden = color; // nothing was "found" in a typed color
     dom.startOverBtn.textContent = color ? 'Try another color' : 'Upload another image';
+    dom.clearBtn.textContent = color ? 'Clear' : 'Remove image';
   }
 
   function renderBaseColor(c) {
@@ -1277,6 +1518,13 @@ Fuchsia E01FA8
     const rgb = parseColorInput(dom.colorInput.value);
     dom.colorChip.style.background = rgb ? rgbToHex(rgb.r, rgb.g, rgb.b) : '';
     dom.colorChip.classList.toggle('has-color', Boolean(rgb));
+    dom.colorClear.hidden = !dom.colorInput.value;
+  }
+
+  function clearColorField() {
+    dom.colorInput.value = '';
+    dom.colorError.hidden = true;
+    updateColorChip();
   }
 
   // A typed color goes through the same engine as an image. It is simply a
@@ -1323,6 +1571,30 @@ Fuchsia E01FA8
     }
   }
 
+  function renderSuggestion(sg) {
+    dom.suggestScheme.innerHTML = `<strong>${esc(sg.scheme.label)}.</strong> ${esc(sg.scheme.note)}`;
+    dom.suggestTrio.innerHTML = sg.colors.map((c) => `
+      <div class="pantone">
+        <button class="pantone__block" style="background:${c.hex}" data-build="${c.hex}" title="Build a palette from ${esc(c.name)}" aria-label="Build a palette from ${esc(c.name)}, ${c.hex}"></button>
+        <div class="pantone__label">
+          <div class="pantone__name">${esc(c.name)}</div>
+          <button class="pantone__hex" data-copy="${c.hex}">${copyIcon()} ${c.hex}</button>
+        </div>
+      </div>`).join('');
+    dom.suggestResult.hidden = false;
+    dom.suggestClear.hidden = false;
+    dom.suggestBtn.textContent = 'Suggest another set';
+  }
+
+  function clearSuggestion() {
+    dom.suggestResult.hidden = true;
+    dom.suggestTrio.innerHTML = '';
+    dom.suggestClear.hidden = true;
+    dom.suggestBtn.textContent = 'Suggest colors';
+  }
+
+  let currentImageUrl = null; // the image on the results screen
+
   function resetToEmpty() {
     dom.colorEntry.hidden = false;
     dom.colorError.hidden = true;
@@ -1334,11 +1606,22 @@ Fuchsia E01FA8
     hideStatus();
     clearError();
     dom.fileInput.value = '';
+    dom.workspace.classList.remove('is-busy');
+    hideToast();
+    if (currentImageUrl) { URL.revokeObjectURL(currentImageUrl); currentImageUrl = null; }
+    dom.workspaceImg.removeAttribute('src');
+    dom.previewImg.removeAttribute('src');
     state = { colorsFound: [], dominant: null, secondary: null, accent: null, recommendations: {}, fullPalette: null, gradientType: 'linear' };
   }
 
   async function handleFile(file) {
+    // "Upload another image" starts this from the results screen, where the hero (and its status
+    // and error lines) is hidden. Feedback has to appear where the person is looking, and the
+    // current results must stay put until the new image is ready.
+    const fromWorkspace = !dom.workspace.hidden;
+    const report = (msg) => (fromWorkspace ? showToast(msg, 5000, true) : showError(msg));
     clearError();
+
     let loaded;
     try {
       loaded = await loadImageFile(file);
@@ -1349,22 +1632,27 @@ Fuchsia E01FA8
         decode: "That image couldn't be analyzed. Try uploading a JPG, PNG, or WebP.",
         empty: "No image was selected.",
       };
-      showError(messages[err.message] || "That image couldn't be analyzed. Try a different file.");
+      report(messages[err.message] || "That image couldn't be analyzed. Try a different file.");
       return;
     }
 
-    dom.previewImg.src = loaded.url;
-    dom.colorEntry.hidden = true;
-    dom.uploaderPreview.hidden = false;
-    dom.dropzone.hidden = true;
-
-    setStatus('Analyzing your image…');
-    dom.workspace.hidden = true;
-    dom.emptySample.hidden = true;
+    if (fromWorkspace) {
+      dom.workspace.classList.add('is-busy');
+      showToast('Analyzing your image…', 60000, true);
+    } else {
+      dom.previewImg.src = loaded.url;
+      dom.colorEntry.hidden = true;
+      dom.uploaderPreview.hidden = false;
+      dom.dropzone.hidden = true;
+      setStatus('Analyzing your image…');
+      dom.workspace.hidden = true;
+      dom.emptySample.hidden = true;
+    }
 
     // Let the browser paint the "analyzing" state before the (brief) synchronous work.
     await new Promise((r) => setTimeout(r, 30));
 
+    let succeeded = false;
     try {
       const imageData = downsampleToImageData(loaded.img);
       const colorsFound = extractColorsFound(imageData);
@@ -1378,6 +1666,8 @@ Fuchsia E01FA8
 
       state = { colorsFound, dominant, secondary, accent, recommendations, fullPalette, gradientType: 'linear' };
 
+      if (currentImageUrl && currentImageUrl !== loaded.url) URL.revokeObjectURL(currentImageUrl);
+      currentImageUrl = loaded.url;
       dom.workspaceImg.src = loaded.url;
       setWorkspaceMode('image');
       selectTab('colors');
@@ -1390,12 +1680,17 @@ Fuchsia E01FA8
 
       dom.hero.hidden = true;
       dom.workspace.hidden = false;
+      succeeded = true;
     } catch (err) {
-      showError("That image couldn't be analyzed. Try uploading a JPG, PNG, or WebP.");
+      if (fromWorkspace) URL.revokeObjectURL(loaded.url); // the old results stay on screen
+      hideToast();
+      report("That image couldn't be analyzed. Try uploading a JPG, PNG, or WebP.");
     } finally {
       // Always clears, whether analysis succeeded or failed, so the interface
       // never gets stuck showing "Analyzing your image..." indefinitely.
       hideStatus();
+      dom.workspace.classList.remove('is-busy');
+      if (succeeded) hideToast();
     }
   }
 
@@ -1410,7 +1705,9 @@ Fuchsia E01FA8
   });
 
   dom.fileInput.addEventListener('change', (e) => {
-    if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // so choosing the same file again still counts as a change
+    if (file) handleFile(file);
   });
 
   ['dragenter', 'dragover'].forEach((evt) => {
@@ -1437,7 +1734,29 @@ Fuchsia E01FA8
   dom.colorForm.addEventListener('submit', (e) => { e.preventDefault(); handleColorSubmit(dom.colorInput.value); });
   dom.colorInput.addEventListener('input', () => { dom.colorError.hidden = true; updateColorChip(); });
   dom.removeBtn.addEventListener('click', resetToEmpty);
-  dom.startOverBtn.addEventListener('click', resetToEmpty);
+
+  // "Upload another image" goes straight to the file picker. "Try another color" goes back to the color field.
+  dom.startOverBtn.addEventListener('click', () => {
+    if (workspaceMode === 'color') {
+      resetToEmpty();
+      dom.colorInput.focus();
+    } else {
+      dom.fileInput.click();
+    }
+  });
+  // "Remove image" / "Clear" returns to the start, and Clear also empties the color field.
+  dom.clearBtn.addEventListener('click', () => {
+    const wasColor = workspaceMode === 'color';
+    resetToEmpty();
+    if (wasColor) clearColorField();
+  });
+
+  // clear (x) in the color field
+  dom.colorClear.addEventListener('click', () => { clearColorField(); dom.colorInput.focus(); });
+
+  // color suggestions
+  dom.suggestBtn.addEventListener('click', () => renderSuggestion(buildSuggestion()));
+  dom.suggestClear.addEventListener('click', clearSuggestion);
 
   // tabs
   dom.tabs.addEventListener('click', (e) => {
@@ -1486,6 +1805,13 @@ Fuchsia E01FA8
 
   // event delegation for every "copy hex" style button rendered dynamically
   document.addEventListener('click', async (e) => {
+    const build = e.target.closest('[data-build]');
+    if (build) {
+      dom.colorInput.value = build.dataset.build;
+      updateColorChip();
+      handleColorSubmit(build.dataset.build);
+      return;
+    }
     const btn = e.target.closest('[data-copy]');
     if (!btn) return;
     const ok = await copyText(btn.dataset.copy);

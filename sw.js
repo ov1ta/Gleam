@@ -8,7 +8,7 @@
    ========================================================= */
 
 // Bump this whenever a shell file changes so old caches get replaced.
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const SHELL_CACHE = `gleam-color-shell-${CACHE_VERSION}`;
 const FONT_CACHE = 'gleam-color-fonts-v1';
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
@@ -17,6 +17,7 @@ const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 const CORE = ['./', './index.html', './style.css', './script.js', './manifest.json'];
 // Nice to have. A missing icon must never stop the app from installing.
 const OPTIONAL = [
+  './colors.js',
   './icons/icon-192.png', './icons/icon-512.png',
   './icons/icon-maskable-192.png', './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png', './icons/favicon-32.png', './icons/favicon-16.png',
@@ -52,7 +53,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.open(FONT_CACHE).then(async (cache) => {
         const cached = await cache.match(request);
-        const refresh = fetch(request).then((res) => { cache.put(request, res.clone()); return res; }).catch(() => cached);
+        const refresh = fetch(request).then((res) => { cache.put(request, res.clone()); return res; }).catch(() => cached || Response.error());
         return cached || refresh;
       })
     );
